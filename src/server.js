@@ -1,0 +1,2000 @@
+#!/usr/bin/env node
+// @ts-check
+/**
+ * OmniAntigravity Remote Chat — Main Server
+ * Mobile remote control for AI coding sessions via CDP mirroring.
+ *
+ * @module server
+ */
+import dotenv from 'dotenv';
+import { fileURLToPath } from 'url';
+import { dirname, join } from 'path';
+
+// Load .env from the package's own directory (not the cwd where npx runs)
+const _ownDir = dirname(dirname(fileURLToPath(import.meta.url)));
+const _ownEnv = join(_ownDir, '.env');
+import fs from 'fs';
+if (fs.existsSync(_ownEnv)) {
+    dotenv.config({ path: _ownEnv });
+} else {
+    dotenv.config(); // fallback to cwd
+}
+
+import express from 'express';
+import compression from 'compression';
+import cookieParser from 'cookie-parser';
+import { WebSocketServer } from 'ws';
+import http from 'http';
+import https from 'https';
+import WebSocket from 'ws';
+
+// ─── Module Imports ─────────────────────────────────────────────────
+import {
+    PROJECT_ROOT, PORTS, CONTAINER_IDS, SERVER_PORT, POLL_INTERVAL,
+    APP_PASSWORD, COOKIE_SECRET, AUTH_SALT, AUTH_COOKIE_NAME, VERSION
+} from './config.js';
+import * as state from './state.js';
+import { getLocalIP, isLocalRequest, getJson } from './utils/network.js';
+import { killPortProcess, launchAntigravity } from './utils/process.js';
+import { hashString } from './utils/hash.js';
+import { discoverCDP, discoverAllCDP, connectCDP, initCDP } from './cdp/connection.js';
+import { inspectUI } from './ui_inspector.js';
+
+// ─── Mutable State ──────────────────────────────────────────────────
+
+/** @type {import('./state.js').CDPConnection | null} */
+let cdpConnection = null;
+
+/** @type {import('./state.js').Snapshot | null} */
+let lastSnapshot = null;
+
+/** @type {string | null} */
+let lastSnapshotHash = null;
+
+/** @type {import('./state.js').CDPTarget[]} */
+let availableTargets = [];
+
+/** @type {string | null} */
+let activeTargetId = null;
+
+/** @type {string} */
+let AUTH_TOKEN = 'ag_default_token';
+
+// ─── CDP Action Functions ───────────────────────────────────────────
+// These functions contain large template-literal scripts injected into
+// the browser via CDP Runtime.evaluate. They stay in this file because
+// the template strings reference interpolated variables from their
+// closure scope, making extraction fragile.
+
+// (connectCDP moved to src/cdp/connection.js)
+
+/**
+ * Capture the current chat DOM as an HTML snapshot with CSS styles.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @returns {Promise<import('./state.js').Snapshot | null>}
+ */
+async function captureSnapshot(cdp) {
+    const CAPTURE_SCRIPT = `(() => {
+        // Smart container detection: try multiple IDs with fallback chain
+        const CONTAINER_IDS = ['cascade', 'conversation', 'chat'];
+        let cascade = null;
+        for (const id of CONTAINER_IDS) {
+            cascade = document.getElementById(id);
+            if (cascade) break;
+        }
+        if (!cascade) {
+            // Debug info
+            const body = document.body;
+            const childIds = Array.from(body.children).map(c => c.id).filter(id => id).join(', ');
+            return { error: 'chat container not found', debug: { hasBody: !!body, availableIds: childIds } };
+        }
+        
+        const cascadeStyles = window.getComputedStyle(cascade);
+        
+        // Find the main scrollable container
+        const scrollContainer = cascade.querySelector('.overflow-y-auto, [data-scroll-area]') || cascade;
+        const scrollInfo = {
+            scrollTop: scrollContainer.scrollTop,
+            scrollHeight: scrollContainer.scrollHeight,
+            clientHeight: scrollContainer.clientHeight,
+            scrollPercent: scrollContainer.scrollTop / (scrollContainer.scrollHeight - scrollContainer.clientHeight) || 0
+        };
+        
+        // Clone cascade to modify it without affecting the original
+        const clone = cascade.cloneNode(true);
+        
+        // Aggressively remove the entire interaction/input/review area
+        try {
+            // 1. Identify common interaction wrappers by class combinations
+            const interactionSelectors = [
+                '.relative.flex.flex-col.gap-8',
+                '.flex.grow.flex-col.justify-start.gap-8',
+                'div[class*="interaction-area"]',
+                '.p-1.bg-gray-500\\/10',
+                '.outline-solid.justify-between',
+                '[contenteditable="true"]'
+            ];
+
+            interactionSelectors.forEach(selector => {
+                clone.querySelectorAll(selector).forEach(el => {
+                    try {
+                        // For the editor, we want to remove its interaction container
+                        if (selector === '[contenteditable="true"]') {
+                            const area = el.closest('.relative.flex.flex-col.gap-8') || 
+                                         el.closest('.flex.grow.flex-col.justify-start.gap-8') ||
+                                         el.closest('div[id^="interaction"]') ||
+                                         el.parentElement?.parentElement;
+                            if (area && area !== clone) area.remove();
+                            else el.remove();
+                        } else {
+                            el.remove();
+                        }
+                    } catch(e) {}
+                });
+            });
+
+            // 2. Text-based cleanup for stray status bars
+            const allElements = clone.querySelectorAll('*');
+            allElements.forEach(el => {
+                try {
+                    const text = (el.innerText || '').toLowerCase();
+                    if (text.includes('review changes') || text.includes('files with changes') || text.includes('context found')) {
+                        if (el.children.length < 10 || el.querySelector('button') || el.classList?.contains('justify-between')) {
+                            el.style.display = 'none';
+                            el.remove();
+                        }
+                    }
+                } catch (e) {}
+            });
+
+            // 3. Base64 image conversion — convert local SVGs/images to data URIs
+            //    This prevents broken images when accessing via ngrok/remote
+            clone.querySelectorAll('img[src], svg').forEach(el => {
+                try {
+                    if (el.tagName === 'SVG') {
+                        const svgData = new XMLSerializer().serializeToString(el);
+                        const img = document.createElement('img');
+                        img.src = 'data:image/svg+xml;base64,' + btoa(unescape(encodeURIComponent(svgData)));
+                        img.style.cssText = el.style.cssText || '';
+                        img.width = el.getAttribute('width') || el.clientWidth || 16;
+                        img.height = el.getAttribute('height') || el.clientHeight || 16;
+                        img.className = el.className?.baseVal || '';
+                        el.replaceWith(img);
+                    } else if (el.src && !el.src.startsWith('data:') && !el.src.startsWith('http')) {
+                        // Local file references — try canvas conversion
+                        try {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = el.naturalWidth || el.width || 16;
+                            canvas.height = el.naturalHeight || el.height || 16;
+                            const ctx = canvas.getContext('2d');
+                            ctx.drawImage(el, 0, 0);
+                            el.src = canvas.toDataURL('image/png');
+                        } catch(canvasErr) {}
+                    }
+                } catch(imgErr) {}
+            });
+        } catch (globalErr) { }
+        
+        const html = clone.outerHTML;
+        
+        const rules = [];
+        for (const sheet of document.styleSheets) {
+            try {
+                for (const rule of sheet.cssRules) {
+                    rules.push(rule.cssText);
+                }
+            } catch (e) { }
+        }
+        const allCSS = rules.join('\\n');
+        
+        return {
+            html: html,
+            css: allCSS,
+            backgroundColor: cascadeStyles.backgroundColor,
+            color: cascadeStyles.color,
+            fontFamily: cascadeStyles.fontFamily,
+            scrollInfo: scrollInfo,
+            stats: {
+                nodes: clone.getElementsByTagName('*').length,
+                htmlSize: html.length,
+                cssSize: allCSS.length
+            }
+        };
+    })()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            // console.log(`Trying context ${ctx.id} (${ctx.name || ctx.origin})...`);
+            const result = await cdp.call("Runtime.evaluate", {
+                expression: CAPTURE_SCRIPT,
+                returnByValue: true,
+                contextId: ctx.id
+            });
+
+            if (result.exceptionDetails) {
+                // console.log(`Context ${ctx.id} exception:`, result.exceptionDetails);
+                continue;
+            }
+
+            if (result.result && result.result.value) {
+                const val = result.result.value;
+                if (val.error) {
+                    // console.log(`Context ${ctx.id} script error:`, val.error);
+                    // if (val.debug) console.log(`   Debug info:`, JSON.stringify(val.debug));
+                } else {
+                    return val;
+                }
+            }
+        } catch (e) {
+            console.log(`Context ${ctx.id} connection error:`, e.message);
+        }
+    }
+
+    return null;
+}
+
+/**
+ * Inject a message into the Antigravity chat editor and submit it.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @param {string} text
+ * @returns {Promise<{ok: boolean, method?: string, reason?: string, error?: string}>}
+ */
+async function injectMessage(cdp, text) {
+    // Use JSON.stringify for robust escaping (handles ", \, newlines, backticks, unicode, etc.)
+    const safeText = JSON.stringify(text);
+
+    const EXPRESSION = `(async () => {
+        const cancel = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
+        if (cancel && cancel.offsetParent !== null) return { ok:false, reason:"busy" };
+
+        const editors = [...document.querySelectorAll('#conversation [contenteditable="true"], #chat [contenteditable="true"], #cascade [contenteditable="true"]')]
+            .filter(el => el.offsetParent !== null);
+        const editor = editors.at(-1);
+        if (!editor) return { ok:false, error:"editor_not_found" };
+
+        const textToInsert = ${safeText};
+
+        editor.focus();
+        document.execCommand?.("selectAll", false, null);
+        document.execCommand?.("delete", false, null);
+
+        let inserted = false;
+        try { inserted = !!document.execCommand?.("insertText", false, textToInsert); } catch {}
+        if (!inserted) {
+            editor.textContent = textToInsert;
+            editor.dispatchEvent(new InputEvent("beforeinput", { bubbles:true, inputType:"insertText", data: textToInsert }));
+            editor.dispatchEvent(new InputEvent("input", { bubbles:true, inputType:"insertText", data: textToInsert }));
+        }
+
+        await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)));
+
+        const submit = document.querySelector("svg.lucide-arrow-right")?.closest("button");
+        if (submit && !submit.disabled) {
+            submit.click();
+            return { ok:true, method:"click_submit" };
+        }
+
+        // Submit button not found, but text is inserted - trigger Enter key
+        editor.dispatchEvent(new KeyboardEvent("keydown", { bubbles:true, key:"Enter", code:"Enter" }));
+        editor.dispatchEvent(new KeyboardEvent("keyup", { bubbles:true, key:"Enter", code:"Enter" }));
+        
+        return { ok:true, method:"enter_keypress" };
+    })()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const result = await cdp.call("Runtime.evaluate", {
+                expression: EXPRESSION,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+
+            if (result.result && result.result.value) {
+                return result.result.value;
+            }
+        } catch (e) { }
+    }
+
+    return { ok: false, reason: "no_context" };
+}
+
+/**
+ * Set the functionality mode (Fast vs Planning).
+ * @param {import('./state.js').CDPConnection} cdp
+ * @param {'Fast' | 'Planning'} mode
+ * @returns {Promise<{success?: boolean, alreadySet?: boolean, error?: string}>}
+ */
+async function setMode(cdp, mode) {
+    if (!['Fast', 'Planning'].includes(mode)) return { error: 'Invalid mode' };
+
+    const EXP = `(async () => {
+        try {
+            // STRATEGY: Find the element that IS the current mode indicator.
+            // It will have text 'Fast' or 'Planning'.
+            // It might not be a <button>, could be a <div> with cursor-pointer.
+            
+            // 1. Get all elements with text 'Fast' or 'Planning'
+            const allEls = Array.from(document.querySelectorAll('*'));
+            const candidates = allEls.filter(el => {
+                // Must have single text node child to avoid parents
+                if (el.children.length > 0) return false;
+                const txt = el.textContent.trim();
+                return txt === 'Fast' || txt === 'Planning';
+            });
+
+            // 2. Find the one that looks interactive (cursor-pointer)
+            // Traverse up from text node to find clickable container
+            let modeBtn = null;
+            
+            for (const el of candidates) {
+                let current = el;
+                // Go up max 4 levels
+                for (let i = 0; i < 4; i++) {
+                    if (!current) break;
+                    const style = window.getComputedStyle(current);
+                    if (style.cursor === 'pointer' || current.tagName === 'BUTTON') {
+                        modeBtn = current;
+                        break;
+                    }
+                    current = current.parentElement;
+                }
+                if (modeBtn) break;
+            }
+
+            if (!modeBtn) return { error: 'Mode indicator/button not found' };
+
+            // Check if already set
+            if (modeBtn.innerText.includes('${mode}')) return { success: true, alreadySet: true };
+
+            // 3. Click to open menu
+            modeBtn.click();
+            await new Promise(r => setTimeout(r, 600));
+
+            // 4. Find the dialog
+            let visibleDialog = Array.from(document.querySelectorAll('[role="dialog"]'))
+                                    .find(d => d.offsetHeight > 0 && d.innerText.includes('${mode}'));
+            
+            // Fallback: Just look for any new visible container if role=dialog is missing
+            if (!visibleDialog) {
+                // Maybe it's not role=dialog? Look for a popover-like div
+                 visibleDialog = Array.from(document.querySelectorAll('div'))
+                    .find(d => {
+                        const style = window.getComputedStyle(d);
+                        return d.offsetHeight > 0 && 
+                               (style.position === 'absolute' || style.position === 'fixed') && 
+                               d.innerText.includes('${mode}') &&
+                               !d.innerText.includes('Files With Changes'); // Anti-context menu
+                    });
+            }
+
+            if (!visibleDialog) return { error: 'Dropdown not opened or options not visible' };
+
+            // 5. Click the option
+            const allDialogEls = Array.from(visibleDialog.querySelectorAll('*'));
+            const target = allDialogEls.find(el => 
+                el.children.length === 0 && el.textContent.trim() === '${mode}'
+            );
+
+            if (target) {
+                target.click();
+                await new Promise(r => setTimeout(r, 200));
+                return { success: true };
+            }
+            
+            return { error: 'Mode option text not found in dialog. Dialog text: ' + visibleDialog.innerText.substring(0, 50) };
+
+        } catch(err) {
+            return { error: 'JS Error: ' + err.toString() };
+        }
+    })()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value) return res.result.value;
+        } catch (e) { }
+    }
+    return { error: 'Context failed' };
+}
+
+/**
+ * Stop the current AI generation.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @returns {Promise<{success?: boolean, method?: string, error?: string}>}
+ */
+async function stopGeneration(cdp) {
+    const EXP = `(async () => {
+        // Look for the cancel button
+        const cancel = document.querySelector('[data-tooltip-id="input-send-button-cancel-tooltip"]');
+        if (cancel && cancel.offsetParent !== null) {
+            cancel.click();
+            return { success: true };
+        }
+        
+        // Fallback: Look for a square icon in the send button area
+        const stopBtn = document.querySelector('button svg.lucide-square')?.closest('button');
+        if (stopBtn && stopBtn.offsetParent !== null) {
+            stopBtn.click();
+            return { success: true, method: 'fallback_square' };
+        }
+
+        return { error: 'No active generation found to stop' };
+    })()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value) return res.result.value;
+        } catch (e) { }
+    }
+    return { error: 'Context failed' };
+}
+
+/**
+ * Click a DOM element via deterministic targeting with occurrence index.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @param {{selector: string, index: number, textContent?: string}} params
+ * @returns {Promise<{success?: boolean, matchCount?: number, index?: number, error?: string}>}
+ */
+async function clickElement(cdp, { selector, index, textContent }) {
+    // Deterministic targeting with occurrence index tracking and leaf-node filtering
+    const safeTextContent = textContent ? JSON.stringify(textContent) : 'null';
+    const EXP = `(async () => {
+        try {
+            const searchText = ${safeTextContent};
+            
+            // 1. Scope search to active chat containers for precision
+            const CONTAINER_IDS = ['cascade', 'conversation', 'chat'];
+            let scope = null;
+            for (const id of CONTAINER_IDS) {
+                scope = document.getElementById(id);
+                if (scope) break;
+            }
+            if (!scope) scope = document.body;
+            
+            // 2. Find all matching elements within the scoped container
+            let elements = Array.from(scope.querySelectorAll('${selector}'));
+            
+            // 3. Text-based filtering with first-line matching for precision
+            if (searchText) {
+                elements = elements.filter(el => {
+                    const elText = el.textContent || '';
+                    // First try exact first-line match (best for "Thought for 3s" etc.)
+                    const firstLine = elText.split('\\n')[0].trim();
+                    if (firstLine === searchText) return true;
+                    // Fallback to includes
+                    return elText.includes(searchText);
+                });
+            }
+            
+            // 4. Leaf-most filtering: prefer inner-most clickable element
+            //    Prevents "Nested DOM Traps" where clicks land on parent containers
+            if (elements.length > 1) {
+                elements = elements.filter(el => {
+                    // Check if any other match is a child of this element
+                    return !elements.some(other => other !== el && el.contains(other));
+                });
+            }
+
+            // 5. Use occurrence index for deterministic targeting 
+            const target = elements[${index}];
+
+            if (target) {
+                target.click();
+                return { success: true, matchCount: elements.length, index: ${index} };
+            }
+            
+            return { error: 'Element not found at index ${index}', candidates: elements.length };
+        } catch(e) {
+            return { error: e.toString() };
+        }
+    })()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value?.success) return res.result.value;
+        } catch (e) { }
+    }
+    return { error: 'Click failed in all contexts' };
+}
+
+/**
+ * Sync phone scroll position to the desktop chat container.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @param {{scrollTop?: number, scrollPercent?: number}} params
+ * @returns {Promise<{success?: boolean, scrolled?: number, error?: string}>}
+ */
+async function remoteScroll(cdp, { scrollTop, scrollPercent }) {
+    // Try to scroll the chat container in Antigravity
+    const EXPRESSION = `(async () => {
+        try {
+            // Find the main scrollable chat container
+            const scrollables = [...document.querySelectorAll('#conversation [class*="scroll"], #chat [class*="scroll"], #cascade [class*="scroll"], #conversation [style*="overflow"], #chat [style*="overflow"], #cascade [style*="overflow"]')]
+                .filter(el => el.scrollHeight > el.clientHeight);
+            
+            // Also check for the main chat area
+            const chatArea = document.querySelector('#conversation .overflow-y-auto, #chat .overflow-y-auto, #cascade .overflow-y-auto, #conversation [data-scroll-area], #chat [data-scroll-area], #cascade [data-scroll-area]');
+            if (chatArea) scrollables.unshift(chatArea);
+            
+            if (scrollables.length === 0) {
+                // Fallback: scroll the main container element
+                const cascade = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
+                if (cascade && cascade.scrollHeight > cascade.clientHeight) {
+                    scrollables.push(cascade);
+                }
+            }
+            
+            if (scrollables.length === 0) return { error: 'No scrollable element found' };
+            
+            const target = scrollables[0];
+            
+            // Use percentage-based scrolling for better sync
+            if (${scrollPercent} !== undefined) {
+                const maxScroll = target.scrollHeight - target.clientHeight;
+                target.scrollTop = maxScroll * ${scrollPercent};
+            } else {
+                target.scrollTop = ${scrollTop || 0};
+            }
+            
+            return { success: true, scrolled: target.scrollTop };
+        } catch(e) {
+            return { error: e.toString() };
+        }
+    })()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXPRESSION,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value?.success) return res.result.value;
+        } catch (e) { }
+    }
+    return { error: 'Scroll failed in all contexts' };
+}
+
+/**
+ * Set the AI model via the model selector dropdown.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @param {string} modelName
+ * @returns {Promise<{success?: boolean, method?: string, error?: string}>}
+ */
+async function setModel(cdp, modelName) {
+    const EXP = `(async () => {
+        try {
+            // STRATEGY: Multi-layered approach to find and click the model selector
+            const KNOWN_KEYWORDS = ["Gemini", "Claude", "GPT", "Model"];
+            
+            let modelBtn = null;
+            
+            // Strategy 1: Look for data-tooltip-id patterns (most reliable)
+            modelBtn = document.querySelector('[data-tooltip-id*="model"], [data-tooltip-id*="provider"]');
+            
+            // Strategy 2: Look for buttons/elements containing model keywords with SVG icons
+            if (!modelBtn) {
+                const candidates = Array.from(document.querySelectorAll('button, [role="button"], div, span'))
+                    .filter(el => {
+                        const txt = el.innerText?.trim() || '';
+                        return KNOWN_KEYWORDS.some(k => txt.includes(k)) && el.offsetParent !== null;
+                    });
+
+                // Find the best one (has chevron icon or cursor pointer)
+                modelBtn = candidates.find(el => {
+                    const style = window.getComputedStyle(el);
+                    const hasSvg = el.querySelector('svg.lucide-chevron-up') || 
+                                   el.querySelector('svg.lucide-chevron-down') || 
+                                   el.querySelector('svg[class*="chevron"]') ||
+                                   el.querySelector('svg');
+                    return (style.cursor === 'pointer' || el.tagName === 'BUTTON') && hasSvg;
+                }) || candidates[0];
+            }
+            
+            // Strategy 3: Traverse from text nodes up to clickable parents
+            if (!modelBtn) {
+                const allEls = Array.from(document.querySelectorAll('*'));
+                const textNodes = allEls.filter(el => {
+                    if (el.children.length > 0) return false;
+                    const txt = el.textContent;
+                    return KNOWN_KEYWORDS.some(k => txt.includes(k));
+                });
+
+                for (const el of textNodes) {
+                    let current = el;
+                    for (let i = 0; i < 5; i++) {
+                        if (!current) break;
+                        if (current.tagName === 'BUTTON' || window.getComputedStyle(current).cursor === 'pointer') {
+                            modelBtn = current;
+                            break;
+                        }
+                        current = current.parentElement;
+                    }
+                    if (modelBtn) break;
+                }
+            }
+
+            if (!modelBtn) return { error: 'Model selector button not found' };
+
+            // Click to open menu
+            modelBtn.click();
+            await new Promise(r => setTimeout(r, 600));
+
+            // Find the dialog/dropdown - search globally (React portals render at body level)
+            let visibleDialog = null;
+            
+            // Try specific dialog patterns first
+            const dialogs = Array.from(document.querySelectorAll('[role="dialog"], [role="listbox"], [role="menu"], [data-radix-popper-content-wrapper]'));
+            visibleDialog = dialogs.find(d => d.offsetHeight > 0 && d.innerText?.includes('${modelName}'));
+            
+            // Fallback: look for positioned divs
+            if (!visibleDialog) {
+                visibleDialog = Array.from(document.querySelectorAll('div'))
+                    .find(d => {
+                        const style = window.getComputedStyle(d);
+                        return d.offsetHeight > 0 && 
+                               (style.position === 'absolute' || style.position === 'fixed') && 
+                               d.innerText?.includes('${modelName}') && 
+                               !d.innerText?.includes('Files With Changes');
+                    });
+            }
+
+            if (!visibleDialog) {
+                // Blind search across entire document as last resort
+                const allElements = Array.from(document.querySelectorAll('[role="menuitem"], [role="option"]'));
+                const target = allElements.find(el => 
+                    el.offsetParent !== null && 
+                    (el.innerText?.trim() === '${modelName}' || el.innerText?.includes('${modelName}'))
+                );
+                if (target) {
+                    target.click();
+                    return { success: true, method: 'blind_search' };
+                }
+                return { error: 'Model list not opened' };
+            }
+
+            // Select specific model inside the dialog
+            const allDialogEls = Array.from(visibleDialog.querySelectorAll('*'));
+            const validEls = allDialogEls.filter(el => el.children.length === 0 && el.textContent?.trim().length > 0);
+            
+            // A. Exact Match (Best)
+            let target = validEls.find(el => el.textContent.trim() === '${modelName}');
+            
+            // B. Page contains Model
+            if (!target) {
+                target = validEls.find(el => el.textContent.includes('${modelName}'));
+            }
+
+            // C. Closest partial match
+            if (!target) {
+                const partialMatches = validEls.filter(el => '${modelName}'.includes(el.textContent.trim()));
+                if (partialMatches.length > 0) {
+                    partialMatches.sort((a, b) => b.textContent.trim().length - a.textContent.trim().length);
+                    target = partialMatches[0];
+                }
+            }
+
+            if (target) {
+                target.scrollIntoView({block: 'center'});
+                target.click();
+                await new Promise(r => setTimeout(r, 200));
+                return { success: true };
+            }
+
+            return { error: 'Model "${modelName}" not found in list. Visible: ' + visibleDialog.innerText.substring(0, 100) };
+        } catch(err) {
+            return { error: 'JS Error: ' + err.toString() };
+        }
+    })()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value) return res.result.value;
+        } catch (e) { }
+    }
+    return { error: 'Context failed' };
+}
+
+/**
+ * Start a new chat by clicking the + button at the top toolbar.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @returns {Promise<{success?: boolean, method?: string, count?: number, error?: string}>}
+ */
+async function startNewChat(cdp) {
+    const EXP = `(async () => {
+        try {
+            // Priority 1: Exact selector from user (data-tooltip-id="new-conversation-tooltip")
+            const exactBtn = document.querySelector('[data-tooltip-id="new-conversation-tooltip"]');
+            if (exactBtn) {
+                exactBtn.click();
+                return { success: true, method: 'data-tooltip-id' };
+            }
+
+            // Fallback: Use previous heuristics
+            const allButtons = Array.from(document.querySelectorAll('button, [role="button"], a'));
+            
+            // Find all buttons with plus icons
+            const plusButtons = allButtons.filter(btn => {
+                if (btn.offsetParent === null) return false; // Skip hidden
+                const hasPlusIcon = btn.querySelector('svg.lucide-plus') || 
+                                   btn.querySelector('svg.lucide-square-plus') ||
+                                   btn.querySelector('svg[class*="plus"]');
+                return hasPlusIcon;
+            });
+            
+            // Filter only top buttons (toolbar area)
+            const topPlusButtons = plusButtons.filter(btn => {
+                const rect = btn.getBoundingClientRect();
+                return rect.top < 200;
+            });
+
+            if (topPlusButtons.length > 0) {
+                 topPlusButtons.sort((a, b) => a.getBoundingClientRect().top - b.getBoundingClientRect().top);
+                 topPlusButtons[0].click();
+                 return { success: true, method: 'filtered_top_plus', count: topPlusButtons.length };
+            }
+            
+            // Fallback: aria-label
+             const newChatBtn = allButtons.find(btn => {
+                const ariaLabel = btn.getAttribute('aria-label')?.toLowerCase() || '';
+                const title = btn.getAttribute('title')?.toLowerCase() || '';
+                return (ariaLabel.includes('new') || title.includes('new')) && btn.offsetParent !== null;
+            });
+            
+            if (newChatBtn) {
+                newChatBtn.click();
+                return { success: true, method: 'aria_label_new' };
+            }
+            
+            return { error: 'New chat button not found' };
+        } catch(e) {
+            return { error: e.toString() };
+        }
+    })()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value?.success) return res.result.value;
+        } catch (e) { }
+    }
+    return { error: 'Context failed' };
+}
+/**
+ * Click the history button and scrape the conversation list.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @returns {Promise<{success?: boolean, chats: Array<{title: string, date: string}>, debug?: object, error?: string}>}
+ */
+async function getChatHistory(cdp) {
+    const EXP = `(async () => {
+        try {
+            const chats = [];
+            const seenTitles = new Set();
+
+            // Priority 1: Look for tooltip ID pattern (history/past/recent)
+            let historyBtn = document.querySelector('[data-tooltip-id*="history"], [data-tooltip-id*="past"], [data-tooltip-id*="recent"], [data-tooltip-id*="conversation-history"]');
+            
+            // Priority 2: Look for button ADJACENT to the new chat button
+            if (!historyBtn) {
+                const newChatBtn = document.querySelector('[data-tooltip-id="new-conversation-tooltip"]');
+                if (newChatBtn) {
+                    const parent = newChatBtn.parentElement;
+                    if (parent) {
+                        const siblings = Array.from(parent.children).filter(el => el !== newChatBtn);
+                        historyBtn = siblings.find(el => el.tagName === 'A' || el.tagName === 'BUTTON' || el.getAttribute('role') === 'button');
+                    }
+                }
+            }
+
+            // Fallback: Use previous heuristics (icon/aria-label)
+            if (!historyBtn) {
+                const allButtons = Array.from(document.querySelectorAll('button, [role="button"], a[data-tooltip-id]'));
+                for (const btn of allButtons) {
+                    if (btn.offsetParent === null) continue;
+                    const hasHistoryIcon = btn.querySelector('svg.lucide-clock') ||
+                                           btn.querySelector('svg.lucide-history') ||
+                                           btn.querySelector('svg.lucide-folder') ||
+                                           btn.querySelector('svg[class*="clock"]') ||
+                                           btn.querySelector('svg[class*="history"]');
+                    if (hasHistoryIcon) {
+                        historyBtn = btn;
+                        break;
+                    }
+                }
+            }
+            
+            if (!historyBtn) {
+                return { error: 'History button not found', chats: [] };
+            }
+
+            // Click and Wait
+            historyBtn.click();
+            await new Promise(r => setTimeout(r, 2000));
+            
+            // Find the side panel
+            let panel = null;
+            let inputsFoundDebug = [];
+            
+            // Strategy 1: The search input has specific placeholder
+            let searchInput = null;
+            const inputs = Array.from(document.querySelectorAll('input'));
+            searchInput = inputs.find(i => {
+                const ph = (i.placeholder || '').toLowerCase();
+                return ph.includes('select') || ph.includes('conversation');
+            });
+            
+            // Strategy 2: Look for any text input that looks like a search bar (based on user snippet classes)
+            if (!searchInput) {
+                const allInputs = Array.from(document.querySelectorAll('input[type="text"]'));
+                inputsFoundDebug = allInputs.map(i => 'ph:' + i.placeholder + ', cls:' + i.className);
+                
+                searchInput = allInputs.find(i => 
+                    i.offsetParent !== null && 
+                    (i.className.includes('w-full') || i.classList.contains('w-full'))
+                );
+            }
+            
+            // Strategy 3: Find known text in the panel (Anchor Text Strategy)
+            let anchorElement = null;
+            if (!searchInput) {
+                 const allSpans = Array.from(document.querySelectorAll('span, div, p'));
+                 anchorElement = allSpans.find(s => {
+                     const t = (s.innerText || '').trim();
+                     return t === 'Current' || t === 'Refining Chat History Scraper'; // specific known title
+                 });
+            }
+
+            const startElement = searchInput || anchorElement;
+
+            if (startElement) {
+                // Walk up to find the panel container
+                let container = startElement;
+                for (let i = 0; i < 15; i++) { 
+                    if (!container.parentElement) break;
+                    container = container.parentElement;
+                    const rect = container.getBoundingClientRect();
+                    
+                    // Panel should have good dimensions
+                    // Relaxed constraints for mobile
+                    if (rect.width > 50 && rect.height > 100) {
+                        panel = container;
+                        
+                        // If it looks like a modal/popover (fixed or absolute pos), that's definitely it
+                        const style = window.getComputedStyle(container);
+                        if (style.position === 'fixed' || style.position === 'absolute' || style.zIndex > 10) {
+                            break;
+                        }
+                    }
+                }
+                
+                // Fallback if loop finishes without specific break
+                if (!panel && startElement) {
+                     // Just go up 4 levels
+                     let p = startElement;
+                     for(let k=0; k<4; k++) { if(p.parentElement) p = p.parentElement; }
+                     panel = p;
+                }
+            }
+            
+            const debugInfo = { 
+                panelFound: !!panel, 
+                panelWidth: panel?.offsetWidth || 0,
+                inputFound: !!searchInput,
+                anchorFound: !!anchorElement,
+                inputsDebug: inputsFoundDebug.slice(0, 5)
+            };
+            
+            if (panel) {
+                // Chat titles are in <span> elements
+                const spans = Array.from(panel.querySelectorAll('span'));
+                
+                // Section headers to skip
+                const SKIP_EXACT = new Set([
+                    'current', 'other conversations', 'now'
+                ]);
+                
+                for (const span of spans) {
+                    const text = span.textContent?.trim() || '';
+                    const lower = text.toLowerCase();
+                    
+                    // Skip empty or too short
+                    if (text.length < 3) continue;
+                    
+                    // Skip section headers
+                    if (SKIP_EXACT.has(lower)) continue;
+                    if (lower.startsWith('recent in ')) continue;
+                    if (lower.startsWith('show ') && lower.includes('more')) continue;
+                    
+                    // Skip timestamps
+                    if (lower.endsWith(' ago') || /^\\d+\\s*(sec|min|hr|day|wk|mo|yr)/i.test(lower)) continue;
+                    
+                    // Skip very long text (containers)
+                    if (text.length > 100) continue;
+                    
+                    // Skip duplicates
+                    if (seenTitles.has(text)) continue;
+                    
+                    seenTitles.add(text);
+                    chats.push({ title: text, date: 'Recent' });
+                    
+                    if (chats.length >= 50) break;
+                }
+            }
+            
+            // Note: Panel is left open on PC as requested ("launch history on pc")
+
+            return { success: true, chats: chats, debug: debugInfo };
+        } catch(e) {
+            return { error: e.toString(), chats: [] };
+        }
+    })()`;
+
+    let lastError = null;
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value) {
+                const val = res.result.value;
+                if (val.success) return val;
+                if (val.error) lastError = val.error;
+            }
+            // If result.value is null/undefined but no error thrown, check exceptionDetails
+            if (res.exceptionDetails) {
+                lastError = res.exceptionDetails.exception?.description || res.exceptionDetails.text;
+            }
+        } catch (e) {
+            lastError = e.message;
+        }
+    }
+    return { error: 'Context failed: ' + (lastError || 'No contexts available'), chats: [] };
+}
+
+/**
+ * Select a specific chat from the history panel by title.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @param {string} chatTitle
+ * @returns {Promise<{success?: boolean, method?: string, error?: string}>}
+ */
+async function selectChat(cdp, chatTitle) {
+    const safeChatTitle = JSON.stringify(chatTitle);
+
+    const EXP = `(async () => {
+    try {
+        const targetTitle = ${safeChatTitle};
+
+        // First, we need to open the history panel
+        // Find the history button at the top (next to + button)
+        const allButtons = Array.from(document.querySelectorAll('button, [role="button"]'));
+
+        let historyBtn = null;
+
+        // Find by icon type
+        for (const btn of allButtons) {
+            if (btn.offsetParent === null) continue;
+            const hasHistoryIcon = btn.querySelector('svg.lucide-clock') ||
+                btn.querySelector('svg.lucide-history') ||
+                btn.querySelector('svg.lucide-folder') ||
+                btn.querySelector('svg.lucide-clock-rotate-left');
+            if (hasHistoryIcon) {
+                historyBtn = btn;
+                break;
+            }
+        }
+
+        // Fallback: Find by position (second button at top)
+        if (!historyBtn) {
+            const topButtons = allButtons.filter(btn => {
+                if (btn.offsetParent === null) return false;
+                const rect = btn.getBoundingClientRect();
+                return rect.top < 100 && rect.top > 0;
+            }).sort((a, b) => a.getBoundingClientRect().left - b.getBoundingClientRect().left);
+
+            if (topButtons.length >= 2) {
+                historyBtn = topButtons[1];
+            }
+        }
+
+        if (historyBtn) {
+            historyBtn.click();
+            await new Promise(r => setTimeout(r, 600));
+        }
+
+        // Now find the chat by title in the opened panel
+        await new Promise(r => setTimeout(r, 200));
+
+        const allElements = Array.from(document.querySelectorAll('*'));
+
+        // Find elements matching the title
+        const candidates = allElements.filter(el => {
+            if (el.offsetParent === null) return false;
+            const text = el.innerText?.trim();
+            return text && text.startsWith(targetTitle.substring(0, Math.min(30, targetTitle.length)));
+        });
+
+        // Find the most specific (deepest) visible element with the title
+        let target = null;
+        let maxDepth = -1;
+
+        for (const el of candidates) {
+            // Skip if it has too many children (likely a container)
+            if (el.children.length > 5) continue;
+
+            let depth = 0;
+            let parent = el;
+            while (parent) {
+                depth++;
+                parent = parent.parentElement;
+            }
+
+            if (depth > maxDepth) {
+                maxDepth = depth;
+                target = el;
+            }
+        }
+
+        if (target) {
+            // Find clickable parent if needed
+            let clickable = target;
+            for (let i = 0; i < 5; i++) {
+                if (!clickable) break;
+                const style = window.getComputedStyle(clickable);
+                if (style.cursor === 'pointer' || clickable.tagName === 'BUTTON') {
+                    break;
+                }
+                clickable = clickable.parentElement;
+            }
+
+            if (clickable) {
+                clickable.click();
+                return { success: true, method: 'clickable_parent' };
+            }
+
+            target.click();
+            return { success: true, method: 'direct_click' };
+        }
+
+        return { error: 'Chat not found: ' + targetTitle };
+    } catch (e) {
+        return { error: e.toString() };
+    }
+})()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value) {
+                const val = res.result.value;
+                if (val.success) return val;
+            }
+        } catch (e) { }
+    }
+    return { error: 'Context failed' };
+}
+
+/**
+ * Check if a chat is currently open (has a cascade/conversation element).
+ * @param {import('./state.js').CDPConnection} cdp
+ * @returns {Promise<{hasChat: boolean, hasMessages: boolean, editorFound: boolean}>}
+ */
+async function hasChatOpen(cdp) {
+    const EXP = `(() => {
+    const chatContainer = document.getElementById('conversation') || document.getElementById('chat') || document.getElementById('cascade');
+    const hasMessages = chatContainer && chatContainer.querySelectorAll('[class*="message"], [data-message]').length > 0;
+    return {
+        hasChat: !!chatContainer,
+        hasMessages: hasMessages,
+        editorFound: !!(chatContainer && chatContainer.querySelector('[data-lexical-editor="true"]'))
+    };
+})()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value) {
+                const val = res.result.value;
+                if (val.hasChat || val.hasMessages || val.editorFound) {
+                    return val;
+                }
+            }
+        } catch (e) { }
+    }
+    return { hasChat: false, hasMessages: false, editorFound: false };
+}
+
+/**
+ * Get the current app state — active mode and AI model.
+ * @param {import('./state.js').CDPConnection} cdp
+ * @returns {Promise<{mode: string, model: string, error?: string} | {error: string}>}
+ */
+async function getAppState(cdp) {
+    const EXP = `(async () => {
+    try {
+        const state = { mode: 'Unknown', model: 'Unknown' };
+
+        // 1. Get Mode (Fast/Planning)
+        // Strategy: Find the clickable mode button which contains either "Fast" or "Planning"
+        // It's usually a button or div with cursor:pointer containing the mode text
+        const allEls = Array.from(document.querySelectorAll('*'));
+
+        // Find elements that are likely mode buttons
+        for (const el of allEls) {
+            if (el.children.length > 0) continue;
+            const text = (el.innerText || '').trim();
+            if (text !== 'Fast' && text !== 'Planning') continue;
+
+            // Check if this or a parent is clickable (the actual mode selector)
+            let current = el;
+            for (let i = 0; i < 5; i++) {
+                if (!current) break;
+                const style = window.getComputedStyle(current);
+                if (style.cursor === 'pointer' || current.tagName === 'BUTTON') {
+                    state.mode = text;
+                    break;
+                }
+                current = current.parentElement;
+            }
+            if (state.mode !== 'Unknown') break;
+        }
+
+        // Fallback: Just look for visible text
+        if (state.mode === 'Unknown') {
+            const textNodes = allEls.filter(el => el.children.length === 0 && el.innerText);
+            if (textNodes.some(el => el.innerText.trim() === 'Planning')) state.mode = 'Planning';
+            else if (textNodes.some(el => el.innerText.trim() === 'Fast')) state.mode = 'Fast';
+        }
+
+        // 2. Get Model
+        // Strategy: Look for leaf text nodes containing a known model keyword
+        const KNOWN_MODELS = ["Gemini", "Claude", "GPT"];
+        const textNodes2 = allEls.filter(el => el.children.length === 0 && el.innerText);
+        
+        // First try: find inside a clickable parent (button, cursor:pointer)
+        let modelEl = textNodes2.find(el => {
+            const txt = el.innerText.trim();
+            if (!KNOWN_MODELS.some(k => txt.includes(k))) return false;
+            // Must be in a clickable context (header/toolbar, not chat content)
+            let parent = el;
+            for (let i = 0; i < 8; i++) {
+                if (!parent) break;
+                if (parent.tagName === 'BUTTON' || window.getComputedStyle(parent).cursor === 'pointer') return true;
+                parent = parent.parentElement;
+            }
+            return false;
+        });
+        
+        // Fallback: any leaf node with a known model name
+        if (!modelEl) {
+            modelEl = textNodes2.find(el => {
+                const txt = el.innerText.trim();
+                return KNOWN_MODELS.some(k => txt.includes(k)) && txt.length < 60;
+            });
+        }
+
+        if (modelEl) {
+            state.model = modelEl.innerText.trim();
+        }
+
+        return state;
+    } catch (e) { return { error: e.toString() }; }
+})()`;
+
+    for (const ctx of cdp.contexts) {
+        try {
+            const res = await cdp.call("Runtime.evaluate", {
+                expression: EXP,
+                returnByValue: true,
+                awaitPromise: true,
+                contextId: ctx.id
+            });
+            if (res.result?.value) {
+                const val = res.result.value;
+                if (val.mode !== 'Unknown' || val.model !== 'Unknown') return val;
+            }
+        } catch (e) { }
+    }
+    return { error: 'Context failed' };
+}
+
+// hashString → src/utils/hash.js
+// isLocalRequest → src/utils/network.js
+// initCDP → src/cdp/connection.js
+
+/**
+ * Background polling with exponential backoff and CDP status broadcast.
+ * @param {import('ws').WebSocketServer} wss
+ * @returns {Promise<void>}
+ */
+async function startPolling(wss) {
+    let lastErrorLog = 0;
+    let isConnecting = false;
+    let reconnectDelay = 2000; // Start at 2s, max 30s
+    const MAX_RECONNECT_DELAY = 30000;
+    let reconnectAttempts = 0;
+    let heartbeatInterval = null;
+
+    // WebSocket ping/pong heartbeat (every 30s)
+    heartbeatInterval = setInterval(() => {
+        wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) {
+                client.ping();
+            }
+        });
+    }, 30000);
+
+    // Broadcast CDP status to all mobile clients
+    function broadcastCDPStatus(status) {
+        const msg = JSON.stringify({ type: 'cdp_status', status, timestamp: new Date().toISOString() });
+        wss.clients.forEach(client => {
+            if (client.readyState === WebSocket.OPEN) client.send(msg);
+        });
+    }
+
+    const poll = async () => {
+        // Periodically refresh available targets list (multi-window)
+        try {
+            availableTargets = await discoverAllCDP();
+        } catch (e) { /* ignore */ }
+
+        if (!cdpConnection || (cdpConnection.ws && cdpConnection.ws.readyState !== WebSocket.OPEN)) {
+            if (!isConnecting) {
+                console.log('🔍 Looking for Antigravity CDP connection...');
+                isConnecting = true;
+                broadcastCDPStatus('reconnecting');
+            }
+            if (cdpConnection) {
+                console.log('🔄 CDP connection lost. Attempting to reconnect...');
+                cdpConnection = null;
+            }
+            try {
+                await initCDP();
+                if (cdpConnection) {
+                    console.log('✅ CDP Connection established from polling loop');
+                    isConnecting = false;
+                    reconnectDelay = 2000; // Reset backoff
+                    reconnectAttempts = 0;
+                    broadcastCDPStatus('connected');
+                }
+            } catch (err) {
+                reconnectAttempts++;
+                reconnectDelay = Math.min(reconnectDelay * 1.5, MAX_RECONNECT_DELAY);
+                if (reconnectAttempts % 5 === 0) {
+                    console.log(`   ⏳ Reconnect attempt #${reconnectAttempts} (next in ${Math.round(reconnectDelay/1000)}s)`);
+                }
+            }
+            setTimeout(poll, reconnectDelay);
+            return;
+        }
+
+        try {
+            const snapshot = await captureSnapshot(cdpConnection);
+            if (snapshot && !snapshot.error) {
+                const hash = hashString(snapshot.html);
+
+                if (hash !== lastSnapshotHash) {
+                    lastSnapshot = snapshot;
+                    lastSnapshotHash = hash;
+
+                    wss.clients.forEach(client => {
+                        if (client.readyState === WebSocket.OPEN) {
+                            client.send(JSON.stringify({
+                                type: 'snapshot_update',
+                                timestamp: new Date().toISOString()
+                            }));
+                        }
+                    });
+
+                    console.log(`📸 Snapshot updated(hash: ${hash})`);
+                }
+            } else {
+                const now = Date.now();
+                if (!lastErrorLog || now - lastErrorLog > 10000) {
+                    const errorMsg = snapshot?.error || 'No valid snapshot captured (check contexts)';
+                    console.warn(`⚠️  Snapshot capture issue: ${errorMsg} `);
+                    if (errorMsg.includes('container not found')) {
+                        console.log('   (Tip: Ensure an active chat is open in Antigravity)');
+                    }
+                    if (cdpConnection.contexts.length === 0) {
+                        console.log('   (Tip: No active execution contexts found. Try interacting with the Antigravity window)');
+                    }
+                    lastErrorLog = now;
+                }
+            }
+        } catch (err) {
+            console.error('Poll error:', err.message);
+        }
+
+        setTimeout(poll, POLL_INTERVAL);
+    };
+
+    poll();
+}
+
+// Create Express app
+async function createServer() {
+    const app = express();
+
+    // Check for SSL certificates
+    const keyPath = join(PROJECT_ROOT, 'certs', 'server.key');
+    const certPath = join(PROJECT_ROOT, 'certs', 'server.cert');
+    const hasSSL = fs.existsSync(keyPath) && fs.existsSync(certPath);
+
+    let server;
+    let httpsServer = null;
+
+    if (hasSSL) {
+        const sslOptions = {
+            key: fs.readFileSync(keyPath),
+            cert: fs.readFileSync(certPath)
+        };
+        httpsServer = https.createServer(sslOptions, app);
+        server = httpsServer;
+    } else {
+        server = http.createServer(app);
+    }
+
+    const wss = new WebSocketServer({ server });
+
+    // Initialize session security & token
+    AUTH_TOKEN = hashString(APP_PASSWORD + AUTH_SALT + Date.now().toString());
+
+    // Check for --launch argument
+    if (process.argv.includes('--launch')) {
+        console.log('CLI flag --launch detected. Spawning new Antigravity instance...');
+        try {
+            await launchAntigravity();
+        } catch (e) {
+            console.error('Failed to auto-launch Antigravity:', e.message);
+        }
+    }
+
+    app.use(compression());
+    app.use(express.json());
+    app.use(cookieParser(COOKIE_SECRET));
+
+    // Ngrok Bypass Middleware
+    app.use((req, res, next) => {
+        // Tell ngrok to skip the "visit" warning for API requests
+        res.setHeader('ngrok-skip-browser-warning', 'true');
+        next();
+    });
+
+    // Auth Middleware
+    app.use((req, res, next) => {
+        const publicPaths = ['/login', '/login.html', '/favicon.ico'];
+        if (publicPaths.includes(req.path) || req.path.startsWith('/css/')) {
+            return next();
+        }
+
+        // Exempt local Wi-Fi devices from authentication
+        if (isLocalRequest(req)) {
+            return next();
+        }
+
+        // Magic Link / QR Code Auto-Login
+        if (req.query.key === APP_PASSWORD) {
+            res.cookie(AUTH_COOKIE_NAME, AUTH_TOKEN, {
+                httpOnly: true,
+                signed: true,
+                maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+            });
+            // Remove the key from the URL by redirecting to the base path
+            return res.redirect('/');
+        }
+
+        const token = req.signedCookies[AUTH_COOKIE_NAME];
+        if (token === AUTH_TOKEN) {
+            return next();
+        }
+
+        // If it's an API request, return 401, otherwise redirect to login
+        if (req.xhr || req.headers.accept?.includes('json') || req.path.startsWith('/snapshot') || req.path.startsWith('/send')) {
+            res.status(401).json({ error: 'Unauthorized' });
+        } else {
+            res.redirect('/login.html');
+        }
+    });
+
+    app.use(express.static(join(PROJECT_ROOT, 'public')));
+
+    // Login endpoint
+    app.post('/login', (req, res) => {
+        const { password } = req.body;
+        if (password === APP_PASSWORD) {
+            res.cookie(AUTH_COOKIE_NAME, AUTH_TOKEN, {
+                httpOnly: true,
+                signed: true,
+                maxAge: 30 * 24 * 60 * 60 * 1000 // 30 days
+            });
+            res.json({ success: true });
+        } else {
+            res.status(401).json({ success: false, error: 'Invalid password' });
+        }
+    });
+
+    // Logout endpoint
+    app.post('/logout', (req, res) => {
+        res.clearCookie(AUTH_COOKIE_NAME);
+        res.json({ success: true });
+    });
+
+    // Get current snapshot
+    app.get('/snapshot', (req, res) => {
+        if (!lastSnapshot) {
+            return res.status(503).json({ error: 'No snapshot available yet' });
+        }
+        res.setHeader('Content-Type', 'application/json; charset=utf-8');
+        res.json(lastSnapshot);
+    });
+
+    // Health check endpoint
+    app.get('/health', (req, res) => {
+        res.json({
+            status: 'ok',
+            cdpConnected: cdpConnection?.ws?.readyState === 1, // WebSocket.OPEN = 1
+            uptime: process.uptime(),
+            timestamp: new Date().toISOString(),
+            https: hasSSL
+        });
+    });
+
+    // SSL status endpoint
+    app.get('/ssl-status', (req, res) => {
+        const keyPath = join(PROJECT_ROOT, 'certs', 'server.key');
+        const certPath = join(PROJECT_ROOT, 'certs', 'server.cert');
+        const certsExist = fs.existsSync(keyPath) && fs.existsSync(certPath);
+        res.json({
+            enabled: hasSSL,
+            certsExist: certsExist,
+            message: hasSSL ? 'HTTPS is active' :
+                certsExist ? 'Certificates exist, restart server to enable HTTPS' :
+                    'No certificates found'
+        });
+    });
+
+    // Generate SSL certificates endpoint
+    app.post('/generate-ssl', async (req, res) => {
+        try {
+            const { execSync } = await import('child_process');
+            execSync('node scripts/generate_ssl.js', { cwd: PROJECT_ROOT, stdio: 'pipe' });
+            res.json({
+                success: true,
+                message: 'SSL certificates generated! Restart the server to enable HTTPS.'
+            });
+        } catch (e) {
+            res.status(500).json({
+                success: false,
+                error: e.message
+            });
+        }
+    });
+
+    // Debug UI Endpoint
+    app.get('/debug-ui', async (req, res) => {
+        if (!cdpConnection) return res.status(503).json({ error: 'CDP not connected' });
+        const uiTree = await inspectUI(cdpConnection);
+        console.log('--- UI TREE ---');
+        console.log(uiTree);
+        console.log('---------------');
+        res.type('json').send(uiTree);
+    });
+
+    // Set Mode
+    app.post('/set-mode', async (req, res) => {
+        const { mode } = req.body;
+        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+        const result = await setMode(cdpConnection, mode);
+        res.json(result);
+    });
+
+    // Set Model
+    app.post('/set-model', async (req, res) => {
+        const { model } = req.body;
+        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+        const result = await setModel(cdpConnection, model);
+        res.json(result);
+    });
+
+    // Stop Generation
+    app.post('/stop', async (req, res) => {
+        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+        const result = await stopGeneration(cdpConnection);
+        res.json(result);
+    });
+
+    // Send message
+    app.post('/send', async (req, res) => {
+        const { message } = req.body;
+
+        if (!message) {
+            return res.status(400).json({ error: 'Message required' });
+        }
+
+        if (!cdpConnection) {
+            return res.status(503).json({ error: 'CDP not connected' });
+        }
+
+        const result = await injectMessage(cdpConnection, message);
+
+        // Always return 200 - the message usually goes through even if CDP reports issues
+        // The client will refresh and see if the message appeared
+        res.json({
+            success: result.ok !== false,
+            method: result.method || 'attempted',
+            details: result
+        });
+    });
+
+    // UI Inspection endpoint - Returns all buttons as JSON for debugging
+    app.get('/ui-inspect', async (req, res) => {
+        if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+
+        const EXP = `(() => {
+    try {
+        // Safeguard for non-DOM contexts
+        if (typeof window === 'undefined' || typeof document === 'undefined') {
+            return { error: 'Non-DOM context' };
+        }
+
+        // Helper to get string class name safely (handles SVGAnimatedString)
+        function getCls(el) {
+            if (!el) return '';
+            if (typeof el.className === 'string') return el.className;
+            if (el.className && typeof el.className.baseVal === 'string') return el.className.baseVal;
+            return '';
+        }
+
+        // Helper to pierce Shadow DOM
+        function findAllElements(selector, root = document) {
+            let results = Array.from(root.querySelectorAll(selector));
+            const elements = root.querySelectorAll('*');
+            for (const el of elements) {
+                try {
+                    if (el.shadowRoot) {
+                        results = results.concat(Array.from(el.shadowRoot.querySelectorAll(selector)));
+                    }
+                } catch (e) { }
+            }
+            return results;
+        }
+
+        // Get standard info
+        const url = window.location ? window.location.href : '';
+        const title = document.title || '';
+        const bodyLen = document.body ? document.body.innerHTML.length : 0;
+        const hasCascade = !!document.getElementById('cascade') || !!document.querySelector('.cascade');
+
+        // Scan for buttons
+        const allLucideElements = findAllElements('svg[class*="lucide"]').map(svg => {
+            const parent = svg.closest('button, [role="button"], div, span, a');
+            if (!parent || parent.offsetParent === null) return null;
+            const rect = parent.getBoundingClientRect();
+            return {
+                type: 'lucide-icon',
+                tag: parent.tagName.toLowerCase(),
+                x: Math.round(rect.left),
+                y: Math.round(rect.top),
+                svgClasses: getCls(svg),
+                className: getCls(parent).substring(0, 100),
+                ariaLabel: parent.getAttribute('aria-label') || '',
+                title: parent.getAttribute('title') || '',
+                parentText: (parent.innerText || '').trim().substring(0, 50)
+            };
+        }).filter(Boolean);
+
+        const buttons = findAllElements('button, [role="button"]').map((btn, i) => {
+            const rect = btn.getBoundingClientRect();
+            const svg = btn.querySelector('svg');
+
+            return {
+                type: 'button',
+                index: i,
+                x: Math.round(rect.left),
+                y: Math.round(rect.top),
+                text: (btn.innerText || '').trim().substring(0, 50) || '(empty)',
+                ariaLabel: btn.getAttribute('aria-label') || '',
+                title: btn.getAttribute('title') || '',
+                svgClasses: getCls(svg),
+                className: getCls(btn).substring(0, 100),
+                visible: btn.offsetParent !== null
+            };
+        }).filter(b => b.visible);
+
+        return {
+            url, title, bodyLen, hasCascade,
+            buttons, lucideIcons: allLucideElements
+        };
+    } catch (err) {
+        return { error: err.toString(), stack: err.stack };
+    }
+})()`;
+
+        try {
+            // 1. Get Frames
+            const { frameTree } = await cdpConnection.call("Page.getFrameTree");
+            function flattenFrames(node) {
+                let list = [{
+                    id: node.frame.id,
+                    url: node.frame.url,
+                    name: node.frame.name,
+                    parentId: node.frame.parentId
+                }];
+                if (node.childFrames) {
+                    for (const child of node.childFrames) list = list.concat(flattenFrames(child));
+                }
+                return list;
+            }
+            const allFrames = flattenFrames(frameTree);
+
+            // 2. Map Contexts
+            const contexts = cdpConnection.contexts.map(c => ({
+                id: c.id,
+                name: c.name,
+                origin: c.origin,
+                frameId: c.auxData ? c.auxData.frameId : null,
+                isDefault: c.auxData ? c.auxData.isDefault : false
+            }));
+
+            // 3. Scan ALL Contexts
+            const contextResults = [];
+            for (const ctx of contexts) {
+                try {
+                    const result = await cdpConnection.call("Runtime.evaluate", {
+                        expression: EXP,
+                        returnByValue: true,
+                        contextId: ctx.id
+                    });
+
+                    if (result.result?.value) {
+                        const val = result.result.value;
+                        contextResults.push({
+                            contextId: ctx.id,
+                            frameId: ctx.frameId,
+                            url: val.url,
+                            title: val.title,
+                            hasCascade: val.hasCascade,
+                            buttonCount: val.buttons.length,
+                            lucideCount: val.lucideIcons.length,
+                            buttons: val.buttons, // Store buttons for analysis
+                            lucideIcons: val.lucideIcons
+                        });
+                    } else if (result.exceptionDetails) {
+                        contextResults.push({
+                            contextId: ctx.id,
+                            frameId: ctx.frameId,
+                            error: `Script Exception: ${result.exceptionDetails.text} ${result.exceptionDetails.exception?.description || ''} `
+                        });
+                    } else {
+                        contextResults.push({
+                            contextId: ctx.id,
+                            frameId: ctx.frameId,
+                            error: 'No value returned (undefined)'
+                        });
+                    }
+                } catch (e) {
+                    contextResults.push({ contextId: ctx.id, error: e.message });
+                }
+            }
+
+            // 4. Match and Analyze
+            const cascadeFrame = allFrames.find(f => f.url.includes('cascade'));
+            const matchingContext = contextResults.find(c => c.frameId === cascadeFrame?.id);
+            const contentContext = contextResults.sort((a, b) => (b.buttonCount || 0) - (a.buttonCount || 0))[0];
+
+            // Prepare "useful buttons" from the best context
+            const bestContext = matchingContext || contentContext;
+            const usefulButtons = bestContext ? (bestContext.buttons || []).filter(b =>
+                b.ariaLabel?.includes('New Conversation') ||
+                b.title?.includes('New Conversation') ||
+                b.ariaLabel?.includes('Past Conversations') ||
+                b.title?.includes('Past Conversations') ||
+                b.ariaLabel?.includes('History')
+            ) : [];
+
+            res.json({
+                summary: {
+                    frameFound: !!cascadeFrame,
+                    cascadeFrameId: cascadeFrame?.id,
+                    contextFound: !!matchingContext,
+                    bestContextId: bestContext?.contextId
+                },
+                frames: allFrames,
+                contexts: contexts,
+                scanResults: contextResults.map(c => ({
+                    id: c.contextId,
+                    frameId: c.frameId,
+                    url: c.url,
+                    hasCascade: c.hasCascade,
+                    buttons: c.buttonCount,
+                    error: c.error
+                })),
+                usefulButtons: usefulButtons,
+                bestContextData: bestContext // Full data for the best context
+            });
+
+        } catch (e) {
+            res.status(500).json({ error: e.message, stack: e.stack });
+        }
+    });
+
+    // WebSocket connection with Auth check
+    wss.on('connection', (ws, req) => {
+        // Parse cookies from headers
+        const rawCookies = req.headers.cookie || '';
+        const parsedCookies = {};
+        rawCookies.split(';').forEach(c => {
+            const [k, v] = c.trim().split('=');
+            if (k && v) {
+                try {
+                    parsedCookies[k] = decodeURIComponent(v);
+                } catch (e) {
+                    parsedCookies[k] = v;
+                }
+            }
+        });
+
+        // Verify signed cookie manually
+        const signedToken = parsedCookies[AUTH_COOKIE_NAME];
+        let isAuthenticated = false;
+
+        // Exempt local Wi-Fi devices from authentication
+        if (isLocalRequest(req)) {
+            isAuthenticated = true;
+        } else if (signedToken) {
+            const token = cookieParser.signedCookie(signedToken, COOKIE_SECRET);
+            if (token === AUTH_TOKEN) {
+                isAuthenticated = true;
+            }
+        }
+
+        if (!isAuthenticated) {
+            console.log('🚫 Unauthorized WebSocket connection attempt');
+            ws.send(JSON.stringify({ type: 'error', message: 'Unauthorized' }));
+            setTimeout(() => ws.close(), 100);
+            return;
+        }
+
+        console.log('📱 Client connected (Authenticated)');
+
+        ws.on('close', () => {
+            console.log('📱 Client disconnected');
+        });
+    });
+
+    return { server, wss, app, hasSSL };
+}
+
+// Main
+async function main() {
+    try {
+        await initCDP();
+    } catch (err) {
+        console.warn(`⚠️  Initial CDP discovery failed: ${err.message}`);
+        console.log('💡 Start Antigravity with --remote-debugging-port=7800 to connect.');
+    }
+
+    try {
+        const { server, wss, app, hasSSL } = await createServer();
+
+        // Start background polling (it will now handle reconnections)
+        startPolling(wss);
+
+        // Remote Click
+        app.post('/remote-click', async (req, res) => {
+            const { selector, index, textContent } = req.body;
+            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+            const result = await clickElement(cdpConnection, { selector, index, textContent });
+            res.json(result);
+        });
+
+        // Multi-Window: List all available CDP targets
+        app.get('/cdp-targets', async (req, res) => {
+            res.json({
+                targets: availableTargets,
+                activeTarget: activeTargetId,
+                connected: !!cdpConnection
+            });
+        });
+
+        // Multi-Window: Switch to a different CDP target
+        app.post('/select-target', async (req, res) => {
+            const { targetId } = req.body;
+            if (!targetId) return res.status(400).json({ error: 'targetId required' });
+
+            const target = availableTargets.find(t => t.id === targetId);
+            if (!target) return res.status(404).json({ error: 'Target not found. Refresh targets.' });
+
+            try {
+                // Close existing connection
+                if (cdpConnection?.ws) {
+                    cdpConnection.ws.close();
+                    cdpConnection = null;
+                }
+
+                console.log(`🔀 Switching to target: ${target.title} (port ${target.port})`);
+                cdpConnection = await connectCDP(target.wsUrl);
+                activeTargetId = targetId;
+                lastSnapshot = null;
+                lastSnapshotHash = null;
+                console.log(`✅ Connected to: ${target.title}`);
+                res.json({ success: true, target: target.title });
+            } catch (err) {
+                res.status(500).json({ error: `Failed to connect: ${err.message}` });
+            }
+        });
+
+        // Remote Scroll - sync phone scroll to desktop
+        app.post('/remote-scroll', async (req, res) => {
+            const { scrollTop, scrollPercent } = req.body;
+            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+            const result = await remoteScroll(cdpConnection, { scrollTop, scrollPercent });
+            res.json(result);
+        });
+
+        // Get App State
+        app.get('/app-state', async (req, res) => {
+            if (!cdpConnection) return res.json({ mode: 'Unknown', model: 'Unknown' });
+            const result = await getAppState(cdpConnection);
+            res.json(result);
+        });
+
+        // Start New Chat
+        app.post('/new-chat', async (req, res) => {
+            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+            const result = await startNewChat(cdpConnection);
+            res.json(result);
+        });
+
+        // Get Chat History
+        app.get('/chat-history', async (req, res) => {
+            if (!cdpConnection) return res.json({ error: 'CDP disconnected', chats: [] });
+            const result = await getChatHistory(cdpConnection);
+            res.json(result);
+        });
+
+        // Select a Chat
+        app.post('/select-chat', async (req, res) => {
+            const { title } = req.body;
+            if (!title) return res.status(400).json({ error: 'Chat title required' });
+            if (!cdpConnection) return res.status(503).json({ error: 'CDP disconnected' });
+            const result = await selectChat(cdpConnection, title);
+            res.json(result);
+        });
+
+        // Check if Chat is Open
+        app.get('/chat-status', async (req, res) => {
+            if (!cdpConnection) return res.json({ hasChat: false, hasMessages: false, editorFound: false });
+            const result = await hasChatOpen(cdpConnection);
+            res.json(result);
+        });
+
+        // Launch a new window
+        app.post('/api/launch-window', async (req, res) => {
+            try {
+                const newPort = await launchAntigravity();
+                // We don't automatically connect here; the polling loop will see it 
+                // and the user can select it via the UI context menu.
+                res.json({ success: true, port: newPort });
+            } catch (err) {
+                console.error('Failed to launch new window:', err);
+                res.status(500).json({ error: err.message });
+            }
+        });
+
+        // Kill any existing process on the port before starting
+        await killPortProcess(SERVER_PORT);
+
+        // Start server
+        const localIP = getLocalIP();
+        const protocol = hasSSL ? 'https' : 'http';
+        server.listen(SERVER_PORT, '0.0.0.0', () => {
+            const url = `${protocol}://${localIP}:${SERVER_PORT}`;
+            const ver = VERSION;
+
+            // ANSI 256-color helpers
+            const R  = '\x1b[0m';
+            const B  = '\x1b[1m';
+            const DIM = '\x1b[2m';
+            const c1 = '\x1b[38;5;99m';
+            const c2 = '\x1b[38;5;135m';
+            const c3 = '\x1b[38;5;141m';
+            const c4 = '\x1b[38;5;147m';
+            const GR = '\x1b[38;5;82m';
+            const CY = '\x1b[38;5;81m';
+            const WH = '\x1b[38;5;255m';
+
+            const line = `${c1}${B}  ${'─'.repeat(50)}${R}`;
+
+            console.log('');
+            console.log(`${c2}${B}   ██████╗ ███╗   ███╗███╗   ██╗██╗${R}`);
+            console.log(`${c2}${B}  ██╔═══██╗████╗ ████║████╗  ██║██║${R}`);
+            console.log(`${c3}${B}  ██║   ██║██╔████╔██║██╔██╗ ██║██║${R}`);
+            console.log(`${c3}${B}  ██║   ██║██║╚██╔╝██║██║╚██╗██║██║${R}`);
+            console.log(`${c4}${B}  ╚██████╔╝██║ ╚═╝ ██║██║ ╚████║██║${R}`);
+            console.log(`${c4}${B}   ╚═════╝ ╚═╝     ╚═╝╚═╝  ╚═══╝╚═╝${R}`);
+            console.log('');
+            console.log(`  ${WH}${B}Antigravity Remote Chat${R}  ${DIM}v${ver}${R}`);
+            console.log(`  ${DIM}Mobile remote control for AI sessions${R}`);
+            console.log('');
+            console.log(line);
+            console.log('');
+            console.log(`  ${GR}${B}▸${R} ${WH}${B}Server${R}     ${CY}${url}${R}`);
+            console.log(`  ${GR}${B}▸${R} ${WH}${B}Protocol${R}   ${hasSSL ? `${GR}HTTPS 🔒` : 'HTTP'}${R}`);
+            console.log(`  ${GR}${B}▸${R} ${WH}${B}CDP${R}        ${DIM}ports 7800-7803${R}`);
+            console.log('');
+            console.log(line);
+            console.log('');
+            console.log(`  ${DIM}📱 Open this URL on your phone${R}`);
+            console.log(`  ${DIM}🪟 Multi-window switching supported${R}`);
+            console.log(`  ${DIM}⏹  Press Ctrl+C to stop${R}`);
+            console.log('');
+        });
+
+        // Graceful shutdown handlers
+        const gracefulShutdown = (signal) => {
+            console.log(`\n🛑 Received ${signal}. Shutting down gracefully...`);
+            wss.close(() => {
+                console.log('   WebSocket server closed');
+            });
+            server.close(() => {
+                console.log('   HTTP server closed');
+            });
+            if (cdpConnection?.ws) {
+                cdpConnection.ws.close();
+                console.log('   CDP connection closed');
+            }
+            setTimeout(() => process.exit(0), 1000);
+        };
+
+        process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+        process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+
+    } catch (err) {
+        console.error('❌ Fatal error:', err.message);
+        process.exit(1);
+    }
+}
+
+main();

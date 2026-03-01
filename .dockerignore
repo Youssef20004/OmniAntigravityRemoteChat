@@ -1,0 +1,15 @@
+node_modules
+npm-debug.log
+.git
+.github
+docs
+test
+scripts
+certs
+.env
+.env.local
+*.md
+!README.md
+.gitignore
+.npmrc
+assets

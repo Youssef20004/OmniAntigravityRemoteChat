@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no"
+    />
+    <title>Login - OmniAntigravity Remote Chat</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+    <style>
+      :root {
+        --bg: #1e1e1e;
+        --surface: #181818;
+        --primary: #6b4cff;
+        --text: #cccccc;
+        --text-muted: #777777;
+      }
+
+      body {
+        margin: 0;
+        padding: 0;
+        background: var(--bg);
+        color: var(--text);
+        font-family: "Inter", sans-serif;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        height: 100vh;
+        overflow: hidden;
+      }
+
+      body::before {
+        content: "";
+        position: fixed;
+        inset: 0;
+        background:
+          radial-gradient(
+            ellipse at 30% 20%,
+            rgba(107, 76, 255, 0.08) 0%,
+            transparent 50%
+          ),
+          radial-gradient(
+            ellipse at 70% 80%,
+            rgba(168, 85, 247, 0.05) 0%,
+            transparent 50%
+          );
+        animation: gradientShift 8s ease-in-out infinite alternate;
+        z-index: 0;
+      }
+
+      @keyframes gradientShift {
+        0% {
+          opacity: 0.7;
+          transform: scale(1);
+        }
+        100% {
+          opacity: 1;
+          transform: scale(1.1);
+        }
+      }
+
+      .login-card {
+        background: var(--surface);
+        padding: 2.5rem;
+        border-radius: 1.5rem;
+        box-shadow:
+          0 20px 60px rgba(0, 0, 0, 0.8),
+          0 0 40px rgba(107, 76, 255, 0.06);
+        width: 90%;
+        max-width: 400px;
+        text-align: center;
+        border: 1px solid #333333;
+        animation: slideUp 0.6s cubic-bezier(0.16, 1, 0.3, 1);
+        position: relative;
+        z-index: 1;
+      }
+
+      @keyframes slideUp {
+        from {
+          opacity: 0;
+          transform: translateY(20px);
+        }
+        to {
+          opacity: 1;
+          transform: translateY(0);
+        }
+      }
+
+      h1 {
+        font-size: 1.75rem;
+        margin-bottom: 0.5rem;
+        background: linear-gradient(
+          135deg,
+          #6366f1 0%,
+          #a855f7 50%,
+          #ec4899 100%
+        );
+        -webkit-background-clip: text;
+        background-clip: text;
+        -webkit-text-fill-color: transparent;
+        font-weight: 700;
+      }
+
+      p {
+        color: var(--text-muted);
+        font-size: 0.95rem;
+        margin-bottom: 2.5rem;
+      }
+
+      .input-group {
+        position: relative;
+        margin-bottom: 1.25rem;
+      }
+
+      input {
+        width: 100%;
+        padding: 1.1rem;
+        background: #2a2a2a;
+        border: 1px solid #333333;
+        border-radius: 0.85rem;
+        color: #fff;
+        box-sizing: border-box;
+        outline: none;
+        transition: all 0.3s;
+        font-size: 1rem;
+      }
+
+      input:focus {
+        border-color: var(--primary);
+        background: #303030;
+        box-shadow: 0 0 0 4px rgba(107, 76, 255, 0.12);
+      }
+
+      button {
+        width: 100%;
+        padding: 1.1rem;
+        background: linear-gradient(135deg, #6b4cff, #5839e8);
+        color: #fff;
+        border: none;
+        border-radius: 0.85rem;
+        font-weight: 600;
+        cursor: pointer;
+        transition: all 0.3s;
+        font-size: 1rem;
+        box-shadow: 0 4px 16px rgba(107, 76, 255, 0.3);
+      }
+
+      button:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 6px 20px rgba(107, 76, 255, 0.4);
+      }
+
+      button:active {
+        transform: translateY(0);
+      }
+
+      .error {
+        color: #ef4444;
+        font-size: 0.9rem;
+        margin-top: 1.25rem;
+        display: none;
+        padding: 0.75rem;
+        background: rgba(239, 68, 68, 0.1);
+        border-radius: 0.5rem;
+      }
+    </style>
+  </head>
+
+  <body>
+    <div class="login-card">
+      <h1>OmniAntigravity</h1>
+      <p>Remote chat access — enter passcode</p>
+      <div class="input-group">
+        <input
+          type="password"
+          id="password"
+          placeholder="Enter password"
+          autofocus
+        />
+      </div>
+      <button id="loginBtn">Connect Securely</button>
+      <div class="error" id="error">Invalid password. Please try again.</div>
+    </div>
+    <script>
+      const btn = document.getElementById("loginBtn");
+      const input = document.getElementById("password");
+      const error = document.getElementById("error");
+
+      async function doLogin() {
+        const password = input.value;
+        if (!password) return;
+
+        btn.disabled = true;
+        btn.textContent = "Verifying...";
+        error.style.display = "none";
+
+        try {
+          const res = await fetch("/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password }),
+          });
+
+          if (res.ok) {
+            window.location.href = "/";
+          } else {
+            error.style.display = "block";
+            btn.disabled = false;
+            btn.textContent = "Connect Securely";
+          }
+        } catch (e) {
+          error.textContent = "Connection failed. Is the server running?";
+          error.style.display = "block";
+          btn.disabled = false;
+          btn.textContent = "Connect Securely";
+        }
+      }
+
+      btn.onclick = doLogin;
+      input.onkeypress = (e) => {
+        if (e.key === "Enter") doLogin();
+      };
+    </script>
+  </body>
+</html>

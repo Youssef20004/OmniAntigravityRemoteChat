@@ -1,0 +1,41 @@
+# Dependencies
+node_modules/
+.venv/
+
+# Logs
+*.log
+server_log.txt
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# Build/Temp
+dist/
+build/
+.DS_Store
+
+# SSL Certificates (generated locally)
+certs/
+
+# Registry
+registry/
+
+# Private docs (marketing, launch plans)
+docs/REDDIT_*
+docs/LAUNCH_*

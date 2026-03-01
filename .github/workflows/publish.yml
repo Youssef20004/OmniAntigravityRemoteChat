@@ -1,0 +1,104 @@
+name: Release & Publish
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'package.json'
+
+jobs:
+  release:
+    name: Release & Publish
+    runs-on: ubuntu-latest
+
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+
+      - name: Detect version change
+        id: version
+        run: |
+          NEW_VERSION=$(node -p "require('./package.json').version")
+          git show HEAD~1:package.json > /tmp/old_package.json 2>/dev/null || echo '{"version":"0.0.0"}' > /tmp/old_package.json
+          OLD_VERSION=$(node -p "require('/tmp/old_package.json').version")
+          echo "new=$NEW_VERSION" >> $GITHUB_OUTPUT
+          echo "old=$OLD_VERSION" >> $GITHUB_OUTPUT
+          if [ "$NEW_VERSION" != "$OLD_VERSION" ]; then
+            echo "changed=true" >> $GITHUB_OUTPUT
+            echo "✅ Version changed: $OLD_VERSION → $NEW_VERSION"
+          else
+            echo "changed=false" >> $GITHUB_OUTPUT
+            echo "⏭️ No version change ($NEW_VERSION), skipping release"
+          fi
+
+      - name: Setup Node.js
+        if: steps.version.outputs.changed == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+          cache: "npm"
+
+      - name: Install & verify
+        if: steps.version.outputs.changed == 'true'
+        run: |
+          npm ci
+          node --check src/server.js
+
+      - name: Generate release notes
+        if: steps.version.outputs.changed == 'true'
+        id: notes
+        run: |
+          VERSION="${{ steps.version.outputs.new }}"
+          NOTES=$(awk "/^## \[$VERSION\]/{found=1; next} /^## \[/{if(found) exit} found" CHANGELOG.md)
+          if [ -z "$NOTES" ]; then
+            NOTES=$(git log --oneline HEAD~5..HEAD --format="- %s")
+          fi
+          echo "notes<<EOF" >> $GITHUB_OUTPUT
+          echo "$NOTES" >> $GITHUB_OUTPUT
+          echo "EOF" >> $GITHUB_OUTPUT
+
+      - name: Create GitHub Release
+        if: steps.version.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="v${{ steps.version.outputs.new }}"
+          gh release create "$VERSION" \
+            --title "$VERSION" \
+            --notes "${{ steps.notes.outputs.notes }}" \
+            --latest
+
+      - name: Publish to NPM
+        if: steps.version.outputs.changed == 'true'
+        run: npm publish --access public
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Login to Docker Hub
+        if: steps.version.outputs.changed == 'true'
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        if: steps.version.outputs.changed == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build & Push Docker image
+        if: steps.version.outputs.changed == 'true'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            diegosouzapw/omni-antigravity-remote-chat:${{ steps.version.outputs.new }}
+            diegosouzapw/omni-antigravity-remote-chat:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
