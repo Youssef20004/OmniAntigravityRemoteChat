@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-03-01
+
+### Added
+
+- 🌐 29-language README translations (pt-BR, es, fr, it, ru, zh-CN, de, ja, in, th, uk-UA, ar, vi, bg, da, fi, he, hu, id, ko, ms, nl, no, pt, ro, pl, sk, sv, phi)
+- 🏳️ Language bar with 30 flag emojis in README.md header
+- 📝 Reusable PRD prompt for multi-language documentation (`docs/PRD_MULTI_LANGUAGE.md`)
+
 ## [0.5.3] - 2026-02-28
 
 ### Changed
